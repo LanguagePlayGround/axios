@@ -1,5 +1,6 @@
 var axios = require('../../../index');
 var http = require('http');
+var net = require('net');
 var url = require('url');
 var zlib = require('zlib');
 var fs = require('fs');
@@ -83,6 +84,7 @@ module.exports = {
     }).listen(4444, function () {
       axios.get('http://localhost:4444/one').then(function (res) {
         test.equal(res.data, str);
+        test.equal(res.request.path, '/two');
         test.done();
       });
     });
@@ -227,6 +229,28 @@ module.exports = {
     });
   },
 
+  testSocket: function (test) {
+    server = net.createServer(function (socket) {
+      socket.on('data', function() {
+        socket.end('HTTP/1.1 200 OK\r\n\r\n');
+      });
+    }).listen('./test.sock', function() {
+      axios({
+        socketPath: './test.sock',
+        url: '/'
+      })
+      .then(function(resp) {
+        test.equal(resp.status, 200);
+        test.equal(resp.statusText, 'OK');
+        test.done();
+      })
+      .catch(function (error) {
+        test.ifError(error);
+        test.done();
+      });
+    });
+  },
+
   testStream: function(test) {
     server = http.createServer(function (req, res) {
       req.pipe(res);
@@ -242,6 +266,45 @@ module.exports = {
         });
         stream.on('end', function () {
           test.equal(string, fs.readFileSync(__filename, 'utf8'));
+          test.done();
+        });
+      });
+    });
+  },
+
+  testFailedStream: function(test) {
+    server = http.createServer(function (req, res) {
+      req.pipe(res);
+    }).listen(4444, function () {
+      axios.post('http://localhost:4444/',
+        fs.createReadStream('/does/not/exist')
+      ).then(function (res) {
+        test.fail();
+      }).catch(function (err) {
+        test.equal(err.message, 'ENOENT: no such file or directory, open \'/does/not/exist\'');
+        test.done();
+      });
+    });
+  },
+
+  testBuffer: function(test) {
+    var buf = new Buffer(1024); // Unsafe buffer < Buffer.poolSize (8192 bytes)
+    buf.fill('x');
+    server = http.createServer(function (req, res) {
+      test.equal(req.headers['content-length'], buf.length.toString());
+      req.pipe(res);
+    }).listen(4444, function () {
+      axios.post('http://localhost:4444/',
+        buf, {
+        responseType: 'stream'
+      }).then(function (res) {
+        var stream = res.data;
+        var string = '';
+        stream.on('data', function (chunk) {
+          string += chunk.toString('utf8');
+        });
+        stream.on('end', function () {
+          test.equal(string, buf.toString());
           test.done();
         });
       });
@@ -283,6 +346,23 @@ module.exports = {
           test.done();
         });
       });
+    });
+  },
+
+  testHTTPProxyDisabled: function(test) {
+    // set the env variable
+    process.env.http_proxy = 'http://does-not-exists.example.com:4242/';
+
+    server = http.createServer(function(req, res) {
+      res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+      res.end('123456789');
+    }).listen(4444, function() {
+      axios.get('http://localhost:4444/', {
+          proxy: false
+        }).then(function(res) {
+          test.equal(res.data, '123456789', 'should not pass through proxy');
+          test.done();
+        });
     });
   },
 
